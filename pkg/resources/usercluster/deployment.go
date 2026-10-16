@@ -111,8 +111,8 @@ func DeploymentReconciler(data userclusterControllerData) reconciling.NamedDeplo
 			dep.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
 				MaxSurge: &intstr.IntOrString{
 					Type: intstr.Int,
-					// The readiness probe only turns ready if a sync succeeded.
-					// That requires that the controller acquires the leader lock, which only happens if the other instance stops
+					// On the leader, the readiness probe only turns ready if a sync succeeded.
+					// Standby replicas are considered ready until they acquire the leader lock.
 					IntVal: 1,
 				},
 				MaxUnavailable: &intstr.IntOrString{

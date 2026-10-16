@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -65,6 +66,7 @@ import (
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlruntimelog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
@@ -324,7 +326,7 @@ func main() {
 		uint32(runOp.openvpnServerPort),
 		uint32(runOp.kasSecurePort),
 		runOp.tunnelingAgentIP.IP,
-		mgr.AddReadyzCheck,
+		leaderOnlyReadyzCheck(mgr),
 		runOp.dnsClusterIP,
 		runOp.nodeLocalDNSCache,
 		runOp.opaIntegration,
@@ -377,7 +379,7 @@ func main() {
 		log.Infof("Added IPAM controller to mgr")
 	}
 
-	if err := rbacusercluster.Add(mgr, log, mgr.AddReadyzCheck, isPausedChecker); err != nil {
+	if err := rbacusercluster.Add(mgr, log, leaderOnlyReadyzCheck(mgr), isPausedChecker); err != nil {
 		log.Fatalw("Failed to add user RBAC controller to mgr", zap.Error(err))
 	}
 	log.Info("Registered user RBAC controller")
@@ -491,5 +493,28 @@ func main() {
 
 	if err := mgr.Start(rootCtx); err != nil {
 		log.Fatalw("Failed running manager", zap.Error(err))
+	}
+}
+
+// readyzRegisterer is the subset of manager.Manager needed to register readyz checks.
+type readyzRegisterer interface {
+	AddReadyzCheck(name string, check healthz.Checker) error
+	Elected() <-chan struct{}
+}
+
+// leaderOnlyReadyzCheck returns a function that registers readyz checks which are only
+// evaluated once this instance has been elected leader. Controllers only reconcile on the
+// leader, so checks like "reconciled successfully once" can never pass on standby replicas
+// and would keep them NotReady forever.
+func leaderOnlyReadyzCheck(mgr readyzRegisterer) func(name string, check healthz.Checker) error {
+	return func(name string, check healthz.Checker) error {
+		return mgr.AddReadyzCheck(name, func(req *http.Request) error {
+			select {
+			case <-mgr.Elected():
+				return check(req)
+			default:
+				return nil
+			}
+		})
 	}
 }
